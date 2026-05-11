@@ -1,0 +1,8 @@
+@startuml blackFriday
+
+rectangle "pymongo-api" as api
+rectangle "MongoDB" as mongo
+
+api --> mongo
+
+@enduml
