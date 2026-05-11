@@ -1,0 +1,106 @@
+@startuml blackFridayScaling
+
+title Black Friday Architecture - Horizontal Scaling with API Gateway and Consul
+
+skinparam rectangle {
+    borderRadius 10
+    shadowing false
+}
+
+' External Client
+actor "Customer / Client" as client
+
+
+package "HashiCorp Consul" {
+    rectangle "consul-server-1" as consul1
+    rectangle "consul-server-2" as consul2
+    rectangle "consul-server-3" as consul3
+}
+
+' API Gateway (middle)
+rectangle "API Gateway (NGINX/HAProxy)" as gateway
+
+' Redis Cache (right)
+package "Redis Cache" {
+    rectangle "redis-primary" as redis_prim
+    rectangle "redis-replica" as redis_rep
+}
+
+
+' Bottom row: API Instances (aligned under Gateway)
+package "API" {
+    rectangle "api-instance-1" as api1
+    rectangle "api-instance-2" as api2
+    rectangle "api-instance-3" as api3
+}
+
+
+' Config Server
+rectangle "configSrv (config server 1)" as config
+
+' Shard 1 Replica Set
+package "Shard 1 Replica Set" {
+    rectangle "shard1-1 (primary)" as shard1_prim
+    rectangle "shard1-2 (secondary)" as shard1_rep2
+    rectangle "shard1-3 (secondary)" as shard1_rep3
+}
+
+' Shard 2 Replica Set
+package "Shard 2 Replica Set" {
+    rectangle "shard2-1 (primary)" as shard2_prim
+    rectangle "shard2-2 (secondary)" as shard2_rep2
+    rectangle "shard2-3 (secondary)" as shard2_rep3
+}
+
+consul1 -[hidden]--> api2
+consul1 -[hidden]--> redis_prim
+consul1 -[hidden]--> redis_prim
+
+
+
+' Client -> API Gateway
+client --> gateway : "HTTP Requests"
+
+' Consul -> API Gateway (service discovery)
+consul1 --> gateway : "Service list"
+consul2 --> gateway : "Health status"
+
+' API Gateway -> API Instances (load balanced)
+gateway --> api1 : "balancing"
+gateway --> api2 : "balancing"
+gateway --> api3 : "balancing"
+
+' API Instances -> Consul for health registration
+api1 --> consul1 : "Register service"
+api2 --> consul2 : "Register service"
+api3 --> consul3 : "Register service"
+
+' API instances interactions with Redis
+api1 --> redis_prim : "GET/SET requests"
+api2 --> redis_prim : "GET/SET requests"
+api3 --> redis_prim : "GET/SET requests"
+
+redis_prim --> redis_rep : "Replication"
+
+' API interactions with infrastructure (via Redis)"
+api1 --> config : "Cluster metadata"
+api2 --> config : "Cluster metadata"
+api3 --> config : "Cluster metadata"
+
+api1 .> shard1_prim : "(cache miss)"
+api2 .> shard2_prim : "(cache miss)"
+api3 .> shard1_prim : "(cache miss)"
+
+' Replication within Shard 1
+shard1_prim --> shard1_rep2 : "Replication (oplog)"
+shard1_prim --> shard1_rep3 : "Replication (oplog)"
+
+' Replication within Shard 2
+shard2_prim --> shard2_rep2 : "Replication (oplog)"
+shard2_prim --> shard2_rep3 : "Replication (oplog)"
+
+' Config server communicates with shard primaries
+config --> shard1_prim
+config --> shard2_prim
+
+@enduml

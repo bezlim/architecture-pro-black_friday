@@ -1,0 +1,101 @@
+name: sharding-repl-cache
+
+services:
+  # Redis Cache
+  redis:
+    container_name: redis
+    image: redis:7-alpine
+    ports:
+      - 6379:6379
+
+  # MongoDB Config Server
+  configSrv1:
+    container_name: configSrv1
+    image: mongo:latest
+    command: ["--configsvr", "--replSet", "cfgrs", "--port", "27019", "--bind_ip", "0.0.0.0"]
+    volumes:
+      - cfgsvr1_data:/data/db
+
+  # MongoDB Shard 1 Replica Set (each member has its own volume)
+  shard1-1:
+    container_name: shard1-1
+    image: mongo:latest
+    command: ["--shardsvr", "--replSet", "shard1", "--port", "27018", "--bind_ip", "0.0.0.0"]
+    volumes:
+      - shard1-1_data:/data/db
+
+  shard1-2:
+    container_name: shard1-2
+    image: mongo:latest
+    command: ["--shardsvr", "--replSet", "shard1", "--port", "27018", "--bind_ip", "0.0.0.0"]
+    volumes:
+      - shard1-2_data:/data/db
+
+  shard1-3:
+    container_name: shard1-3
+    image: mongo:latest
+    command: ["--shardsvr", "--replSet", "shard1", "--port", "27018", "--bind_ip", "0.0.0.0"]
+    volumes:
+      - shard1-3_data:/data/db
+
+  # MongoDB Shard 2 Replica Set (each member has its own volume)
+  shard2-1:
+    container_name: shard2-1
+    image: mongo:latest
+    command: ["--shardsvr", "--replSet", "shard2", "--port", "27020", "--bind_ip", "0.0.0.0"]
+    volumes:
+      - shard2-1_data:/data/db
+
+  shard2-2:
+    container_name: shard2-2
+    image: mongo:latest
+    command: ["--shardsvr", "--replSet", "shard2", "--port", "27020", "--bind_ip", "0.0.0.0"]
+    volumes:
+      - shard2-2_data:/data/db
+
+  shard2-3:
+    container_name: shard2-3
+    image: mongo:latest
+    command: ["--shardsvr", "--replSet", "shard2", "--port", "27020", "--bind_ip", "0.0.0.0"]
+    volumes:
+      - shard2-3_data:/data/db
+
+  # MongoDB mongos router
+  mongos1:
+    container_name: mongos1
+    image: mongo:latest
+    command: ["mongos", "--configdb", "cfgrs/configSrv1:27019", "--port", "27017", "--bind_ip", "0.0.0.0"]
+    depends_on:
+      - configSrv1
+      - shard1-1
+      - shard1-2
+      - shard1-3
+      - shard2-1
+      - shard2-2
+      - shard2-3
+    ports:
+      - 8080:8080
+
+  pymongo_api:
+    container_name: pymongo_api
+    build:
+      context: api_app
+      dockerfile: Dockerfile
+    depends_on:
+      - mongos1
+      - redis
+    ports:
+      - 8081:8080
+    environment:
+      MONGODB_URL: "mongodb://mongos1:27017"
+      MONGODB_DATABASE_NAME: "somedb"
+      REDIS_URL: "redis://redis:6379"
+
+volumes:
+  cfgsvr1_data:
+  shard1-1_data:
+  shard1-2_data:
+  shard1-3_data:
+  shard2-1_data:
+  shard2-2_data:
+  shard2-3_data:

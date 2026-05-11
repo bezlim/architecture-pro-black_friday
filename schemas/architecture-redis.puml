@@ -1,0 +1,57 @@
+@startuml blackFridayRedis
+
+title Black Friday Architecture - MongoDB Sharding with Replication and Redis Caching
+
+skinparam rectangle {
+    borderRadius 10
+    shadowing false
+}
+
+' API Service
+rectangle "pymongo-api (app instance 1)" as api
+
+' Redis Cache
+package "Redis Cache" {
+    rectangle "redis-primary" as redis_prim
+    rectangle "redis-replica" as redis_rep
+}
+
+' Config Server
+rectangle "configSrv (config server 1)" as config
+
+' Shard 1 Replica Set
+package "Shard 1 Replica Set" {
+    rectangle "shard1-1 (primary)" as shard1_prim
+    rectangle "shard1-2 (secondary)" as shard1_rep2
+    rectangle "shard1-3 (secondary)" as shard1_rep3
+}
+
+' Shard 2 Replica Set
+package "Shard 2 Replica Set" {
+    rectangle "shard2-1 (primary)" as shard2_prim
+    rectangle "shard2-2 (secondary)" as shard2_rep2
+    rectangle "shard2-3 (secondary)" as shard2_rep3
+}
+
+' API interactions with Redis
+api --> redis_prim : "GET/SET requests"
+redis_prim --> redis_rep : "Replication"
+
+' API interactions with infrastructure (via Redis)"
+api --> config : "Cluster metadata"
+api .> shard1_prim : "(cache miss)"
+api .> shard2_prim : "(cache miss)"
+
+' Replication within Shard 1
+shard1_prim --> shard1_rep2 : "Replication ( oplog )"
+shard1_prim --> shard1_rep3 : "Replication ( oplog )"
+
+' Replication within Shard 2
+shard2_prim --> shard2_rep2 : "Replication ( oplog )"
+shard2_prim --> shard2_rep3 : "Replication ( oplog )"
+
+' Config server communicates with shard primaries
+config --> shard1_prim
+config --> shard2_prim
+
+@enduml
