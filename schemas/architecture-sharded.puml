@@ -1,0 +1,24 @@
+@startuml blackFriday
+
+title Black Friday Architecture - MongoDB Sharding
+
+skinparam rectangle {
+    borderRadius 10
+    shadowing false
+}
+
+rectangle "pymongo-api" as api
+
+rectangle "Mongo Config Server" as config
+
+rectangle "Mongo Shard 1" as shard1
+rectangle "Mongo Shard 2" as shard2
+
+api --> config : "Cluster metadata"
+api --> shard1 : "Shard 1 data"
+api --> shard2 : "Shard 2 data"
+
+config --> shard1
+config --> shard2
+
+@enduml
