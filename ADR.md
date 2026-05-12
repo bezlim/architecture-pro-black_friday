@@ -261,18 +261,55 @@ db.adminCommand({ split: "somedb.products", middle: { category:_HASH_ } })
 db.adminCommand({ moveChunk: "somedb.products", find: { category: HASH }, to: "shard2" })
 ```
 
+#### 6. **Zoned Tag Sharding**
+Механизм привязки конкретных диапазонов данных к шардам с тегами (например, по регионам).
+
+**Концепция:**
+- Шарды получают теги (например, `shard1: "eu"`, `shard2: "us"`, `shard3: "asia"`)
+- Popular category "Electronics" реплицируется на все шарды с разными тегами
+- Для read-запросов MongoDB направляет запрос к шарду с нужным тегом (по геолокации пользователя)
+
+**Пример конфигурации:**
+```javascript
+// 1. Создать теги для шардов
+sh.addTaggedShard("shard1", { region: "eu" })
+sh.addTaggedShard("shard2", { region: "us" })
+sh.addTaggedShard("shard3", { region: "asia" })
+
+// 2. Определить зоны для популярной категории
+sh.addZoneRange("somedb.products", { category: "Electronics", region: "eu" }, { category: "Electronics", region: "eu" }, "shard1")
+sh.addZoneRange("somedb.products", { category: "Electronics", region: "us" }, { category: "Electronics", region: "us" }, "shard2")
+sh.addZoneRange("somedb.products", { category: "Electronics", region: "asia" }, { category: "Electronics", region: "asia" }, "shard3")
+
+// 3. Настроить приложение на использование readPreference с tag set
+db.products.find({ category: "Electronics" }).readPref("secondaryPreferred", [{ region: "eu" }])
+
+// 4. Для балансировки чанков с зонами
+sh.settings.balance zones_enabled: true
+```
+
+**Преимущества:**
+- Горизонтальное масштабирование популярных категорий без кэша
+- Geographically aware routing: пользователи из EU читают из EU-реплики (низкая задержка)
+- Автоматическое распределение нагрузки между шардами по тегам
+
+**Ограничения:**
+- Избыточность данных (дублирование популярных категорий на всех шардах)
+- Сложность поддержки согласованности между зонами (нужны read repair или TTL)
+- MongoDB требует полного покрытия всех чанков зонами или отсутствие зон
+
 ---
 
 ### Проактивные меры
 
 1. **Redis cache для популярных категорий** — кэшировать запросы к "Электронике"
 2. **Region-based sub-sharding** — добавить поле `region` к шард-ключу
-3. **Alerting на нагрузку** — триггер при превышении 70% нагрузки на один шард
-4. **Regular chunk balancing** — запланированная балансировка через `balancer`
-5. **TTL индексы для старых данных** — архивировать старые заказы
+3. **Zoned tag sharding для горячих категорий** — реплицировать популярные категории на все шарды с разными тегами
+4. **Alerting на нагрузку** — триггер при превышении 70% нагрузки на один шард
+5. **Regular chunk balancing** — запланированная балансировка через `balancer`
+6. **TTL индексы для старых данных** — архивировать старые заказы
 
 ---
-
 ### Пример мониторинга в реальном времени
 
 ```javascript
@@ -336,20 +373,21 @@ db.getSiblingDB("local").oplog.rs.stats()
 
 ### Задание 10.1: Выбор данных для миграции
 
-#### Критически важные сущности для Cassandra
-
-| Сущность | Приоритет | Обоснование |
-|---------|----------|-------------|
-| **Корзины (carts)** | ⭐⭐⭐⭐⭐ | Высокая частота записи (каждое добавление/удаление), требует быструю запись и горизонтальное масштабирование без downtime |
-| **История заказов (orders)** | ⭐⭐⭐⭐ | Много чтений по пользователю, требует геораспределение для быстрого доступа к истории заказов |
-| **Товары (products)** | ⭐⭐⭐ | Много чтений, можно кэшировать в Redis, но нужна репликация для отказоустойчивости |
-| **Пользовательские сессии** | ⭐⭐⭐⭐ | Требует быстрых чтения/запись, TTL поддержка в Cassandra |
+**Важно:** MongoDB с версии 4.2 поддерживает MULTI-DOCUMENT ACID транзакции в шардированных кластерах. Это позволяет надёжно создавать заказы вместе с обновлением остатков в одной транзакции — риск продажи недоступного товара исключается.
 
 #### Сущности, НЕ подходящие для Cassandra
 
 | Сущность | Причина |
 |---------|---------|
-| Аналитика/Big data | Лучше подходит для колоночных БД (ClickHouse) или дата-лайков |
+| **Продукты (products)** | Нужна транзакционная логика: создание заказа + обновление остатков в одной ATOMIC операции. Cassandra не поддерживает транзакции. |
+| **Заказы (orders)** | Нужна согласованность: заказ должен быть создан, когда остатки ещё актуальны (race condition при параллельных заказах). |
+
+#### Критически важные сущности для Cassandra
+
+| Сущность | Приоритет | Обоснование |
+|---------|-----|---------|
+| **Корзины (carts)** | ⭐⭐⭐⭐⭐ | Высокая частота записи (каждое добавление/удаление), требует быструю запись и горизонтальное масштабирование без downtime. Нет критичной транзакционной логики. |
+| **Пользовательские сессии** | ⭐⭐⭐⭐ | Требует быстрых чтения/записи, TTL поддержка в Cassandra встроена. |
 
 #### Обоснование выбора Cassandra
 
@@ -357,10 +395,13 @@ db.getSiblingDB("local").oplog.rs.stats()
 - **No full resharding** — добавление узлов не требует перемещения данных
 - **TTL support** — автоматическая очистка сессий и корзин
 - **Write-heavy workload** — оптимизирована для 50k+ writes/sec
+- **Геораспределение** — быстрый доступ к корзинам пользователей в любом регионе
 
 ---
 
-### Задание 10.2: Концептуальная модель
+### Задание 10.2: Концептуальная модель (только для корзин и сессий)
+
+**Важно:** `products` и `orders` остаются в MongoDB благодаря поддержке ACID-транзакций в шардированных кластерах (начиная с версии 4.2).
 
 #### Таблица: `user_cart`
 
@@ -375,102 +416,96 @@ CREATE TABLE user_cart (
 ) WITH CLUSTERING ORDER BY (added_at DESC);
 ```
 
-**Partition key:** `user_id`  
+**Partition key:** `user_id`
 **Clustering key:** `added_at`, `product_id`
 
 **Обоснование:**
-- Все корзины одного пользователя находятся в одной партиции
+- Все корзины одного пользователя в одной партиции
 - Сортировка по времени добавления для отображения новых первыми
 - No hot partitions — равномерное распределение по user_id (UUID)
 
-#### Таблица: `user_orders`
+#### Таблица: `user_sessions`
 
 ```sql
-CREATE TABLE user_orders (
+CREATE TABLE user_sessions (
     user_id UUID,
-    order_id UUID,
+    session_id UUID,
+    data TEXT,
     created_at TIMESTAMP,
-    status TEXT,
-    items LIST<MAP<UUID, INT>>,
-    total_amount DECIMAL,
-    region TEXT,
     PRIMARY KEY ((user_id), created_at)
-) WITH CLUSTERING ORDER BY (created_at DESC);
-```
+) WITH TTL = 3600;
+````
 
-**Partition key:** `user_id`  
+**Partition key:** `user_id`
 **Clustering key:** `created_at`
+**TTL:** 3600 секунд (1 час для неактивных сессий)
 
 **Обоснование:**
-- Все заказы пользователя в одной партиции
-- Сортировка по дате (новые первые)
-- Эффективность: `WHERE user_id = X` — чтение из одной партиции
-
-#### Таблица: `product_inventory`
-
-```sql
-CREATE TABLE product_inventory (
-    product_id UUID,
-    region TEXT,
-    stock INT,
-    updated_at TIMESTAMP,
-    PRIMARY KEY ((product_id), region)
-);
-```
-
-**Partition key:** `product_id`  
-**Clustering key:** `region`
-
-**Обоснование:**
-- Все регионы для одного товара в одной партиции
-- Эффективность: `WHERE product_id = X` — получить остатки по всем регионам
-#### Таблица: `product_by_category`
-
-```sql
-CREATE TABLE product_by_category (
-    category TEXT,
-    product_id UUID,
-    name TEXT,
-    price DECIMAL,
-    PRIMARY KEY ((category), product_id)
-) WITH CLUSTERING ORDER BY (product_id ASC);
-```
-
-**Partition key:** `category`  
-**Clustering key:** `product_id`
-
-**Обоснование:**
-- Все товары из одной категории сгрупированы вместе
-- Эффективность: `WHERE category = 'Electronics'`
+- TTL встроена в Cassandra — автоочистка истёкших сессий
+- Быстрый доступ по user_id для восстановления состояния
 
 ---
 
-### Задание 10.3: Стратегии обеспечения целостности данных
-
-| Стратегия | Описание |-latency impact | Для каких таблиц |
-|---------|----------|---------------|-----------------|
-| **Hinted Handoff** | При падении реплики данные сохраняются на других узлах, потом перенаправляются | Low | `user_cart`, `product_inventory` (критично для записи) |
-| **Read Repair** | При чтении проверяются все реплики, расхождения исправляются | Medium (1-2ms) | `user_orders` |
-| **Anti-Entropy Repair** | Периодичное востановление в бэкграунде | High (background only) | `product_by_category` (read-heavy, consistency less critical) |
-
-#### Обоснование выбора стратегий
+### Задание 10.3: Стратегии обеспечения целостности данных для Cassandra
 
 | Таблица | Стратегия | Обоснование |
-|---------|----------|-------------|
-| `user_cart` | Hinted Handoff + Read Repair | Критично для записи — нельзя потерять добавление товара, важна низкая задержка |
-| `user_orders` | Read Repair | Частые чтения, требует согласованность статуса заказа |
-| `product_inventory` | Hinted Handoff | Критично точное количество на складе, но чтения могут быть немного устаревшими |
-| `product_by_category` | Anti-Entropy Repair (weekly) | Каталог может быть немного устаревшим, важна доступность |
+|---------|-----|--|
+| `user_cart` | Hinted Handoff + Read Repair | Критично для записи — нельзя потерять добавление товара. Read Repair поддерживает согласованность. |
+| `user_sessions` | Read Repair + TTL | Сессии не критичны к потере — приоритет доступности. TTL обеспечивает автоочистку. |
 
 #### Уровни согласованности
 
 ```cql
--- Для критичных операций (добавление в корзину)
+-- Для записи в корзину (согласованность важна)
 CONSISTENCY LOCAL_QUORUM
 
--- Для чтения истории заказов
+-- Для чтения сессий (доступность важнее)
 CONSISTENCY ONE
-
--- Для отображения списка товаров
-CONSISTENCY LOCAL_ONE
 ```
+
+---
+
+### Задание 10.4: ACID-транзакции в MongoDB для заказов
+
+**Проблема:** При создании заказа нужно одновременно:
+1. Создать документ заказа
+2. Уменьшить остаток товара на складе
+
+**Решение:** MongoDB поддерживает MULTI-DOCUMENT ACID-транзакции в шардированных кластерах (начиная с версии 4.2).
+
+**Пример транзакции:**
+```javascript
+const session = db.getMongo().startSession();
+session.startTransaction();
+
+try {
+  // Создание заказа
+  session.getDatabase("somedb").orders.insertOne({
+    user_id: userId,
+    items: cartItems,
+    status: "created",
+    created_at: new Date(),
+    total_amount: calculateTotal(cartItems)
+  });
+
+  // Обновление остатков
+  for (let item of cartItems) {
+    session.getDatabase("somedb").products.updateOne(
+      { _id: item.product_id },
+      { $inc: { stock: -item.quantity } }
+    );
+  }
+
+  session.commitTransaction();
+} catch (error) {
+  session.abortTransaction();
+  throw error;
+} finally {
+  session.endSession();
+}
+```
+
+**Обоснование:**
+- **Изоляция** — параллельные заказы не влияют друг на друга
+- **Атомарность** — либо всё успешно, либо ничего не изменено
+- **Согласованность** — остатки никогда не могут уйти в минус
