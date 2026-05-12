@@ -18,9 +18,15 @@
    docker compose up -d
    ```
 
-2. Дождитесь готовности контейнеров (примерно 20 секунд)
+2. Дождитесь готовности контейнеров (примерно 20 секунд) и запустите скрипт инициализации
+  ```bash
+  chmod +x ./scripts/mongo-init.sh
+  ./scripts/mongo-init.sh
+  ```
+3. Откройте свагер http://127.0.0.1:8081/docs и проверьте время второго ответа по ендпоинту GET users
 
-3. Инициализируйте Replica Set для Config Server:
+## Описание настроек в скрипте
+1. Инициализация Replica Set для Config Server:
    ```bash
    docker compose exec configSrv1 mongosh --port 27019 --eval "
    rs.initiate({
@@ -30,7 +36,7 @@
    "
    ```
 
-4. Инициализируйте Replica Set для Shard 1:
+2. Инициализация Replica Set для Shard 1:
    ```bash
    docker compose exec shard1-1 mongosh --port 27018 --eval "
    rs.initiate({
@@ -44,7 +50,7 @@
    "
    ```
 
-5. Инициализируйте Replica Set для Shard 2:
+3. Инициализация Replica Set для Shard 2:
    ```bash
    docker compose exec shard2-1 mongosh --port 27020 --eval "
    rs.initiate({
@@ -58,7 +64,7 @@
    "
    ```
 
-6. Подключите шарды к кластеру:
+4. Подключение шардов к кластеру:
    ```bash
    docker compose exec mongos1 mongosh --port 27017 --eval "
    sh.addShard(\"shard1/shard1-1:27018\")
@@ -66,7 +72,7 @@
    "
    ```
 
-7. Включите шардирование для базы и коллекции:
+5. Включение шардирования для базы и коллекции:
    ```bash
    docker compose exec mongos1 mongosh --port 27017 --eval "
    sh.enableSharding(\"somedb\")
@@ -74,7 +80,7 @@
    "
    ```
 
-8. Заполните данными:
+6. Заполнение данными:
    ```bash
    docker compose exec mongos1 mongosh --port 27017 --eval "
    db = db.getSiblingDB(\"somedb\")
